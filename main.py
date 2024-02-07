@@ -1,50 +1,55 @@
-from fastapi import FastAPI, BackgroundTasks
-from typing import Union
-
-import logging
-import time
-
+from fastapi import FastAPI, HTTPException
 import cflib.crtp
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
-from cflib.positioning.motion_commander import MotionCommander
 from cflib.crazyflie import Crazyflie
 
 app = FastAPI()
 
 URI = 'radio://0/80/2M'
-DEFAULT_HEIGHT = 0.3 
-
 cflib.crtp.init_drivers(enable_debug_driver=False)
 
-def simple_connect():
-    print("Yeah, I'm connected! :D")
-    time.sleep(3)
-    print("Now I will disconnect :'(")
+scf_global = None
 
-def take_off_simple(scf):
-    with MotionCommander(scf, default_height=DEFAULT_HEIGHT) as mc:
-        time.sleep(2)
-        mc.stop()
+def connect_crazyflie():
+    global scf_global
+    if scf_global is None:
+        try:
+            scf_global = SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache'))
+            scf_global.open_link()
+            return True
+        except Exception as e:
+            print(f"Failed to connect: {e}")
+            return False
+    else:
+        return True  
 
-async def connect_background_task():
-    with SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache')) as scf:
-        simple_connect()
-
-async def takeoff_background_task():
-    with SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache')) as scf:
-        take_off_simple(scf)
+def disconnect_crazyflie():
+    global scf_global
+    if scf_global is not None:
+        scf_global.close_link()
+        scf_global = None
+        return True
+    else:
+        return False  
 
 @app.post("/connect")
-async def connect(background_tasks: BackgroundTasks):
-    background_tasks.add_task(connect_background_task)
-    return {"message": "Connection sequence initiated"}
+async def connect():
+    if connect_crazyflie():
+        return {"message": "Crazyflie connected successfully"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to connect to Crazyflie")
+
+@app.post("/disconnect")
+async def disconnect():
+    if disconnect_crazyflie():
+        return {"message": "Crazyflie disconnected successfully"}
+    else:
+        return {"message": "Crazyflie was not connected"}
 
 @app.post("/takeoff")
-async def takeoff(background_tasks: BackgroundTasks):
-    background_tasks.add_task(takeoff_background_task)
+async def takeoff():
+    global scf_global
+    if scf_global is None:
+        raise HTTPException(status_code=503, detail="Crazyflie not connected")
     return {"message": "Takeoff sequence initiated"}
-
-@app.get("/")
-def read_root():
-    return {"Crazyflie": "Drone"}
 
