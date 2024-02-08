@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from threading import Event
 import time
 import cflib.crtp
@@ -135,6 +135,32 @@ async def read_battery_voltage():
         return battery_voltage
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading battery voltage: {e}")
+
+async def log_stab_async(websocket: WebSocket, scf: SyncCrazyflie):
+    logconf = LogConfig(name='Stabilizer', period_in_ms=10)
+    logconf.add_variable('stabilizer.roll', 'float')
+    logconf.add_variable('stabilizer.pitch', 'float')
+    logconf.add_variable('stabilizer.yaw', 'float')
+
+    def log_stab_callback(timestamp, data, logconf):
+        asyncio.create_task(websocket.send_json({"timestamp": timestamp, **data}))
+
+    cf = scf.cf
+    cf.log.add_config(logconf)
+    logconf.data_received_cb.add_callback(log_stab_callback)
+    logconf.start()
+
+    while True:
+        await asyncio.sleep(1)
+        if websocket.client_state == WebSocket.DISCONNECTED:
+            logconf.stop()
+            break
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    with SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache')) as scf:
+        await log_stab_async(websocket, scf)
 
 @app.post("/takeoff")
 async def takeoff():
