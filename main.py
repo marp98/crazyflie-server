@@ -1,4 +1,6 @@
 from fastapi import FastAPI, HTTPException
+from threading import Event
+import time
 import cflib.crtp
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.crazyflie import Crazyflie
@@ -22,6 +24,15 @@ URI = 'radio://0/80/2M'
 cflib.crtp.init_drivers(enable_debug_driver=False)
 
 scf_global = None
+deck_attached_event = Event()
+
+def param_deck_flow(_, value_str):
+    value = int(value_str)
+    if value:
+        deck_attached_event.set()
+        print('Deck is attached!')
+    else:
+        print('Deck is NOT attached!')
 
 def connect_crazyflie():
     global scf_global
@@ -29,12 +40,16 @@ def connect_crazyflie():
         try:
             scf_global = SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache'))
             scf_global.open_link()
-            return True
+            scf_global.cf.param.add_update_callback(group='deck', name='bcFlow2', cb=param_deck_flow)
+            time.sleep(1)
+            deck_attached = deck_attached_event.is_set()
+            return True, deck_attached  
         except Exception as e:
             print(f"Failed to connect: {e}")
-            return False
+            return False, False  
     else:
-        return True  
+        deck_attached = deck_attached_event.is_set()
+        return True, deck_attached
 
 def disconnect_crazyflie():
     global scf_global
@@ -47,8 +62,9 @@ def disconnect_crazyflie():
 
 @app.post("/connect")
 async def connect():
-    if connect_crazyflie():
-        return {"message": "Crazyflie connected successfully"}
+    success, deck_attached = connect_crazyflie()
+    if success:
+        return {"message": "Crazyflie connected successfully", "deck_attached": deck_attached}
     else:
         raise HTTPException(status_code=500, detail="Failed to connect to Crazyflie")
 
