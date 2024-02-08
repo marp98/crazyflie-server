@@ -4,6 +4,8 @@ import time
 import cflib.crtp
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.crazyflie import Crazyflie
+from cflib.crazyflie.log import LogConfig
+from cflib.crazyflie.syncLogger import SyncLogger
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -60,6 +62,44 @@ def disconnect_crazyflie():
     else:
         return False  
 
+def get_stabilizer_parameters(scf):
+    lg_stab = LogConfig(name='Stabilizer', period_in_ms=10)  # Adjust period as needed
+    lg_stab.add_variable('stabilizer.roll', 'float')
+    lg_stab.add_variable('stabilizer.pitch', 'float')
+    lg_stab.add_variable('stabilizer.yaw', 'float')
+    
+    stabilizer_data = {}
+
+    def log_stab_callback(timestamp, data, logconf_name):
+        # Format each value with 8 decimal places
+        for key, value in data.items():
+            stabilizer_data[key] = f"{value:.8f}"
+
+    with SyncLogger(scf, lg_stab) as logger:
+        lg_stab.data_received_cb.add_callback(log_stab_callback)
+        # Wait for at least one set of data to be received
+        while not stabilizer_data:
+            time.sleep(0.1)
+
+    return stabilizer_data
+
+def get_battery_voltage(scf):
+    log_config = LogConfig(name='Battery', period_in_ms=1000)  # Adjust logging period as needed
+    log_config.add_variable('pm.vbat', 'float')
+    
+    battery_voltage = {'voltage': 0.0}
+
+    def battery_voltage_callback(timestamp, data, logconf):
+        battery_voltage['voltage'] = f"{data['pm.vbat']:.8f}"
+
+    with SyncLogger(scf, log_config) as logger:
+        log_config.data_received_cb.add_callback(battery_voltage_callback)
+        # Wait for at least one set of data to be received
+        while battery_voltage['voltage'] == 0.0:
+            time.sleep(0.1)
+
+    return battery_voltage
+
 @app.post("/connect")
 async def connect():
     success, deck_attached = connect_crazyflie()
@@ -74,6 +114,27 @@ async def disconnect():
         return {"message": "Crazyflie disconnected successfully"}
     else:
         return {"message": "Crazyflie was not connected"}
+
+@app.post("/read_parameters")
+async def read_parameters():
+    global scf_global
+    if scf_global is None:
+        raise HTTPException(status_code=503, detail="Crazyflie not connected")
+    
+    stabilizer_data = get_stabilizer_parameters(scf_global)
+    return stabilizer_data
+
+@app.post("/read_battery_voltage")
+async def read_battery_voltage():
+    global scf_global
+    if scf_global is None:
+        raise HTTPException(status_code=503, detail="Crazyflie not connected")
+    
+    try:
+        battery_voltage = get_battery_voltage(scf_global)
+        return battery_voltage
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading battery voltage: {e}")
 
 @app.post("/takeoff")
 async def takeoff():
